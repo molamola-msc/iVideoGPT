@@ -5,7 +5,6 @@ outputs
 log_vqgan
 log_trm
 mbrl
-ivideogpt
 slurm-*
 pretrained_models
 pretrained_transformer
