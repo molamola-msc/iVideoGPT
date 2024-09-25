@@ -54,7 +54,11 @@ require_version("datasets>=1.8.0", "To fix: pip install -r examples/pytorch/lang
 
 MODEL_CONFIG_CLASSES = list(MODEL_MAPPING.keys())
 
-
+def collate_fn(batch):
+  return {
+      'images': torch.stack([x['images'] for x in batch]),
+      'actions': torch.stack([x['actions'] for x in batch])
+}
 def get_dataloaders(args):
     # DataLoaders creation:
     if args.strong_aug:
@@ -299,7 +303,10 @@ def parse_args():
     parser.add_argument('--max_generate_batchsize', default=None, type=int)
     parser.add_argument('--max_decode_batchsize', default=None, type=int)
     parser.add_argument('--eval_only', default=False, action='store_true')
-    parser.add_argument('--log_gif_interval', default=10, type=int)
+    parser.add_argument('--log_gif_interval', default=1, type=int)
+    parser.add_argument('--action_cat', default=False, action='store_true', help="if action from different frames concated together")
+    parser.add_argument('--frame_per_action', default=1, type=int, help="number of frames per action")
+    parser.add_argument('--action_predict', default=None, type=float, help="predict next action")
 
     args = parser.parse_args()
     args.model_type = args.config_name.split('/')[1]
@@ -307,7 +314,7 @@ def parse_args():
         assert False, f"model_type {args.model_type} is not supported."
 
     if args.per_device_eval_batch_size is None:
-        args.per_device_eval_batch_size = args.per_device_train_batch_size
+        args.per_device_eval_batch_size = 1
 
     assert not (args.action_conditioned and not args.special_token), \
         "Action conditioned model must have special token enabled."
@@ -325,6 +332,7 @@ def evaluate(args, accelerator, tokenizer, model, eval_dataloader, evaluator, co
     bar = tqdm(range(eval_iters), desc="validation", disable=not accelerator.is_local_main_process)
 
     for i, batch in enumerate(eval_dataloader):
+        print(i)
         if i == args.max_eval_iters:
             break
         if args.action_conditioned:
@@ -517,6 +525,7 @@ def plot_gif(x, postfix=''):
 
 def start_train():
     args = parse_args()
+    print(args.per_device_eval_batch_size, "    11111111111111")
     args.output_dir = os.path.join(args.output_dir, time.strftime("%Y-%m-%d-%X", time.localtime()) + (
         "" if args.exp_name is None else f"-{args.exp_name}"))
     os.makedirs(args.output_dir, exist_ok=True)
@@ -576,6 +585,7 @@ def start_train():
     # In distributed training, the .from_pretrained methods guarantee that only one local process can concurrently
     # download model & vocab.
     train_dataloader, eval_dataloader = get_dataloaders(args)
+    print(len(eval_dataloader),"    11111111111111")
     tokenizer, vocab_size = get_tokenizer(args)
 
     if args.config_name:
@@ -603,7 +613,9 @@ def start_train():
         model = HeadModelWithAction(model, action_dim=args.action_dim, prelude_tokens_num=perlude_tokens_num,
                                     tokens_num_per_dyna=tokens_per_dyna, context=args.context_length,
                                     segment_length=args.segment_length, model_type=args.model_type,
-                                    reward_prediction=args.reward_prediction, action_recon=args.action_recon)
+                                    reward_prediction=args.reward_prediction, action_recon=args.action_recon,
+                                    action_cat=args.action_cat, frame_per_action = args.frame_per_action,
+                                    action_predict=args.action_predict)
 
     if args.pretrained_transformer_path is not None:
         state_dict = load_file(os.path.join(args.pretrained_transformer_path, 'model.safetensors'))
@@ -792,6 +804,9 @@ def start_train():
                 if args.action_recon:
                     avg_action_recon_loss = accelerator.gather(accelerator.unwrap_model(
                         model).action_recon_loss.repeat(args.per_device_train_batch_size)).float().mean()
+                if args.action_predict:
+                    avg_action_predict_loss = accelerator.gather(accelerator.unwrap_model(
+                        model).action_predict_loss.repeat(args.per_device_train_batch_size)).float().mean()
                 accelerator.backward(loss)
 
                 if args.max_grad_norm is not None and accelerator.sync_gradients:
@@ -818,6 +833,8 @@ def start_train():
                     }
                     if args.action_recon:
                         logs.update({"action_recon_loss": avg_action_recon_loss.item()})
+                    if args.action_predict:
+                        logs.update({"action_predict_loss": avg_action_predict_loss.item()})
                     accelerator.log(logs, step=completed_steps)
 
                 # Save model checkpoint

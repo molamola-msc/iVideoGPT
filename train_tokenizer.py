@@ -131,7 +131,7 @@ def parse_args():
                             " `args.validation_images` and logging the reconstructed images."
                         ),
                         )
-    parser.add_argument("--log_image_steps", type=int, default=100)
+    parser.add_argument("--log_image_steps", type=int, default=10000)
     parser.add_argument("--vae_loss", type=str, default="l1", help="The loss function for vae reconstruction loss.")
     parser.add_argument("--pretrained_model_name_or_path", type=str, default=None,
                         help="Path to pretrained model or model identifier from huggingface.co/models.")
@@ -225,7 +225,7 @@ def parse_args():
                         ),
                         )
     parser.add_argument("--local_rank", type=int, default=-1, help="For distributed training: local_rank")
-    parser.add_argument("--checkpointing_steps", type=int, default=5000,
+    parser.add_argument("--checkpointing_steps", type=int, default=10000,
                         help=(
                             "Save a checkpoint of the training state every X updates. These checkpoints are only suitable for resuming"
                             " training using `--resume_from_checkpoint`."

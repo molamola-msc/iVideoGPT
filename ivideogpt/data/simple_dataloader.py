@@ -17,6 +17,7 @@ from .sthsth_dataloader import SomethingV2Dataset
 
 def get_base_stepsize(dataset_name):
     stepsize = {
+        'open-television': 15,
         'fractal20220817_data': 3,
         'kuka': 10,
         'bridge': 5,
@@ -141,8 +142,30 @@ class SimpleRoboticDatasetv2(data.Dataset):
         self.no_aug = no_aug
 
         self.load_action = load_action
-
-        if dataset_name == 'bair_robot_pushing':
+        with open('l.txt', 'w') as f:
+            f.write(self.dataset_name)
+        self.open_television_action_cmd = None
+        self.open_television_action_joint_pos = None
+        if dataset_name == 'open-television':
+            #self.load_action = True
+            parent_dir = yaml.load(open('DATASET.yaml'), Loader=yaml.FullLoader)['open_television']
+            if self.load_action:
+                action_dir = yaml.load(open('DATASET.yaml'), Loader=yaml.FullLoader)['open_television_action']
+            if train:
+                self.filenames = glob.glob(os.path.join(parent_dir, 'task[0-3]_episode[0-7].npy'))
+                if self.load_action:
+                    self.open_television_action_cmd = glob.glob(os.path.join(action_dir, 'task[0-3]_episode[0-7]_cmd.npy'))
+                    self.open_television_action_joint_pos = glob.glob(os.path.join(action_dir, 'task[0-3]_episode[0-7]_joint_pos.npy'))
+            else:
+                self.filenames = glob.glob(os.path.join(parent_dir, 'task[0-3]_episode[8-9].npy'))
+                if self.load_action:
+                    self.open_television_action_cmd = glob.glob(os.path.join(action_dir, 'task[0-3]_episode[8-9]_cmd.npy'))
+                    self.open_television_action_joint_pos = glob.glob(os.path.join(action_dir, 'task[0-3]_episode[8-9]_joint_pos.npy'))
+            self.filenames.sort()
+            if self.load_action:
+                self.open_television_action_cmd.sort()
+                self.open_television_action_joint_pos.sort()
+        elif dataset_name == 'bair_robot_pushing':
             if train:
                 parent_dir = yaml.load(open('DATASET.yaml'), Loader=yaml.FullLoader)['bair_train_dataset']
             else:
@@ -316,10 +339,20 @@ class SimpleRoboticDatasetv2(data.Dataset):
             # use EvalDataset for downstream task fixed evaluation
             start = np.random.randint(max(len(episode) - stepsize * self.segment_length + 1, 1))
             images = [step for step in episode[start: start + stepsize * self.segment_length: stepsize]]
-            if action is not None:
-                actions = [action for action in action[start: start + stepsize * self.segment_length: stepsize]]
+            if self.dataset_name == 'open-television':
+                all_actions = [action for action in action[start: start + stepsize * self.segment_length]]
+                actions = []
+                for i in range(0, stepsize * self.segment_length, stepsize):
+                    new_action = all_actions[i]
+                    for j in range(1, stepsize):
+                        new_action = np.concatenate([new_action, all_actions[i + j]], axis=0)
+                    actions.append(new_action)
+                
             else:
-                actions = None
+                if action is not None:
+                    actions = [action for action in action[start: start + stepsize * self.segment_length: stepsize]]
+                else:
+                    actions = None
 
         # if the episode is too short, repeat the last image
         while len(images) < self.segment_length:
@@ -361,12 +394,23 @@ class SimpleRoboticDatasetv2(data.Dataset):
         return F.resize(images, [self.image_size, self.image_size])
 
     def __getitem__(self, item):
-        id = np.random.randint(self.size)
-        episode = np.load(self.filenames[id])[self.display_key]
-        action = np.load(self.filenames[id])['action'] if self.load_action else None
-        if self.dataset_name == 'tfds_robonet' and action is not None:
-            new_row = np.array([0, 0, 0, 0, 0]).reshape(1, -1)
-            action = np.append(action, new_row, axis=0)
+        if self.dataset_name == 'open-television':
+            id = np.random.randint(self.size)
+            episode = np.load(self.filenames[id], allow_pickle=True)
+            episode = episode[10:-10]        # remove the first and last 10 frames
+            if self.load_action:
+                action_cmd = np.load(self.open_television_action_cmd[id])[10:-10]
+                action_joint_pos = np.load(self.open_television_action_joint_pos[id])[10:-10]
+                action = np.concatenate([action_cmd, action_joint_pos], axis=1)
+            else:
+                action = None
+        else:
+            id = np.random.randint(self.size)
+            episode = np.load(self.filenames[id])[self.display_key]
+            action = np.load(self.filenames[id])['action'] if self.load_action else None
+            if self.dataset_name == 'tfds_robonet' and action is not None:
+                new_row = np.array([0, 0, 0, 0, 0]).reshape(1, -1)
+                action = np.append(action, new_row, axis=0)
         images, actions = self.get_segment(episode, action)
         images = torch.Tensor(np.array(images)).permute(0, 3, 1, 2)  # T, H, W, C -> T, C, H, W
         if self.no_aug:
@@ -443,8 +487,22 @@ class EvalDataset(data.Dataset):
 
         self.segment_length = segment_length
         self.load_action = load_action
-
-        if dataset_name == 'bair_robot_pushing':
+        self.open_television_action_cmd = None
+        self.open_television_action_joint_pos = None
+        if dataset_name == 'open-television':
+            #self.load_action = True
+            parent_dir = yaml.load(open('DATASET.yaml'), Loader=yaml.FullLoader)['open_television']
+            if self.load_action:
+                action_dir = yaml.load(open('DATASET.yaml'), Loader=yaml.FullLoader)['open_television_action']
+            self.filenames = glob.glob(os.path.join(parent_dir, '*[8-9].npy'))
+            if self.load_action:
+                self.open_television_action_cmd = glob.glob(os.path.join(action_dir, '*[8-9]_cmd.npy'))
+                self.open_television_action_joint_pos = glob.glob(os.path.join(action_dir, '*[8-9]_joint_pos.npy'))
+            self.filenames.sort()
+            if self.load_action:
+                self.open_television_action_cmd.sort()
+                self.open_television_action_joint_pos.sort()
+        elif dataset_name == 'bair_robot_pushing':
             parent_dir = yaml.load(open('DATASET.yaml'), Loader=yaml.FullLoader)['bair_test_dataset']
             self.filenames = glob.glob(os.path.join(parent_dir, '*.npz'))
             self.filenames.sort()
@@ -494,11 +552,16 @@ class EvalDataset(data.Dataset):
         return images, actions
 
     def __getitem__(self, item):
-        episode = np.load(self.filenames[item])[self.display_key]
-        action = np.load(self.filenames[item])['action'] if self.load_action else None
-        if self.dataset_name == 'tfds_robonet' and action is not None:
-            new_row = np.array([0, 0, 0, 0, 0]).reshape(1, -1)
-            action = np.append(action, new_row, axis=0)
+        if self.dataset_name == 'open-television':
+            id = np.random.randint(self.size)
+            episode = np.load(self.filenames[id], allow_pickle=True)
+            action = None
+        else:
+            episode = np.load(self.filenames[item])[self.display_key]
+            action = np.load(self.filenames[item])['action'] if self.load_action else None
+            if self.dataset_name == 'tfds_robonet' and action is not None:
+                new_row = np.array([0, 0, 0, 0, 0]).reshape(1, -1)
+                action = np.append(action, new_row, axis=0)
         images, actions = self.get_segment(episode, action)
         images = torch.Tensor(np.array(images)).permute(0, 3, 1, 2)  # T, H, W, C -> T, C, H, W
         images = self.data_augmentation(images)
@@ -511,6 +574,7 @@ class EvalDataset(data.Dataset):
 
     def __len__(self):
         return self.size
+
 
 
 class EvalDataLoader(data.DataLoader):

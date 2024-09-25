@@ -1,0 +1,1 @@
+sbatch -N 1 --gres=gpu:4 --qos=gpugpu --nodelist=paraai-n32-h-01-agent-9 -p vip_gpu_scx6378_02 run.sh

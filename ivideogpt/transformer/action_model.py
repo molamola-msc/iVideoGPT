@@ -7,7 +7,7 @@ from transformers.modeling_outputs import BaseModelOutputWithPastAndCrossAttenti
 
 class HeadModelWithAction(nn.Module):
     def __init__(self, llm, action_dim, prelude_tokens_num, tokens_num_per_dyna, context, segment_length, model_type='llama',
-                 reward_prediction=False, action_recon=None, **kwargs):
+                 reward_prediction=False, action_recon=None, action_cat=False, frame_per_action=1, action_predict=False, **kwargs):
         #              prelude                          dyna
         #                 |                              |
         # ([0:255] scf [0:255])         sdf [0:15] sdf [0:15]
@@ -26,6 +26,9 @@ class HeadModelWithAction(nn.Module):
         self.token_for_sdf = llm.config.vocab_size - 1  # the last token is used for sdf
         self.reward_prediction = reward_prediction
         self.action_recon = action_recon
+        self.action_cat = action_cat
+        self.frame_per_action = frame_per_action
+        self.action_predict = action_predict
 
         if self.model_type == 'llama':
             embed_dim = llm.config.hidden_size
@@ -43,6 +46,8 @@ class HeadModelWithAction(nn.Module):
 
         if self.action_recon:
             self.action_recon_linear = nn.Linear(embed_dim, action_dim)
+        if self.action_predict:
+            self.action_predict_linear = nn.Linear(embed_dim, action_dim)
 
     def get_input_embeddings(self, input_ids):
         if self.model_type == 'llama':
@@ -180,7 +185,7 @@ class HeadModelWithAction(nn.Module):
             position_ids=position_ids,
             inputs_embeds=new_inputs_embeds,
             labels=labels,
-            output_hidden_states=self.reward_prediction or self.action_recon,
+            output_hidden_states=self.reward_prediction or self.action_recon or self.action_predict,
         )
 
         if self.action_recon:
@@ -188,11 +193,32 @@ class HeadModelWithAction(nn.Module):
             hidden_action_recon_states = hidden_states[:, self.prelude_tokens_num:]
             action_recon = self.action_recon_linear(
                 hidden_action_recon_states).reshape(-1, self.segment_length - self.context, (self.tokens_num_per_dyna + 1), self.action_dim)
-            action_recon_loss = nn.functional.mse_loss(
-                action_recon, action[:, self.context - 1:-1].unsqueeze(-2).repeat(1, 1, self.tokens_num_per_dyna + 1, 1))
+            if not self.action_cat:
+                action_recon_loss = nn.functional.mse_loss(
+                    action_recon, action[:, self.context - 1:-1].unsqueeze(-2).repeat(1, 1, self.tokens_num_per_dyna + 1, 1))
+            else:
+                old_action = action[:, self.context - 1:-1].unsqueeze(-2).repeat(1, 1, self.tokens_num_per_dyna + 1, 1) # 
+                new_action = action_recon.reshape(action_recon.shape[0], action_recon.shape[1], action_recon.shape[2], self.frame_per_action, -1).mean(-2)
+                old_action2 = old_action.reshape(old_action.shape[0], old_action.shape[1], old_action.shape[2], self.frame_per_action, -1).mean(-2)
+                action_recon_loss = nn.functional.mse_loss(new_action, old_action2)
+                
             self.action_recon_loss = action_recon_loss
             x.loss += self.action_recon * action_recon_loss
-
+        if self.action_predict:
+            hidden_states = x.hidden_states[-1]
+            hidden_action_predict_states = hidden_states[:, self.prelude_tokens_num:]
+            action_predict = self.action_predict_linear(hidden_action_predict_states).reshape(-1, self.segment_length - self.context, (self.tokens_num_per_dyna + 1), self.action_dim)
+            old_action = action[:, self.context:-1] # B,T-1,D
+            new_action = action_predict[:, :-1, -1, :] # B,T-1,D
+            if not self.action_cat:
+                action_predict_loss = nn.functional.mse_loss(new_action, old_action)
+            else:
+                old_action = old_action.reshape(old_action.shape[0], old_action.shape[1], self.frame_per_action, -1).mean(-2)
+                new_action = new_action.reshape(new_action.shape[0], new_action.shape[1], self.frame_per_action, -1).mean(-2)
+                action_predict_loss = nn.functional.mse_loss(new_action, old_action)
+            self.action_predict_loss = action_predict_loss
+            x.loss += self.action_predict * action_predict_loss
+            
         if self.reward_prediction:
             hidden_states = x.hidden_states[-1]
             # see diagram above
